@@ -1,4 +1,10 @@
-# FX Options + Delta-One Backtest System — Project Brief
+# FX Options + Delta-One Backtest System
+
+> Project brief / README — paste this into a new conversation with Claude to kick
+> off implementation. It captures the full scope, architecture, and design
+> decisions already agreed on, so no context needs to be re-derived.
+
+---
 
 ## Objective
 
@@ -36,6 +42,8 @@ Assume Python (pandas, numpy, scipy, matplotlib/plotly) unless told otherwise.
     daily P&L, daily delta, daily vega
   - Metrics: total P&L, max drawdown (+ date), Sharpe, Calmar, Sortino,
     best/worst 10-day P&L windows
+  - A trade blotter (Excel) listing every trade/clip with entry/exit dates, size,
+    signals, strategy, and exposure at entry (see "Output: trade blotter" below)
 
 ## Architecture — layered pipeline
 
@@ -177,6 +185,22 @@ fxbacktest/
 - Sanity-check the pricer + hedger together: daily hedged P&L on an ATM straddle
   should roughly track `0.5·gamma·(dS)² − theta·dt` — if that identity doesn't
   hold, something's wrong before strategy signals even enter the picture.
+
+## Output: trade blotter (Excel)
+
+Alongside the performance report, produce a trade blotter as an Excel file — one
+row per trade/clip — with at least:
+
+- Entry date, exit date
+- Currency pair, instrument type (option/spot/forward), strike, tenor/expiry
+- Size / notional, clip id
+- Strategy id, signal value(s) that triggered entry/exit
+- Entry price/vol, exit price/vol
+- Realized P&L, and exposure at entry (delta, vega, FX notional)
+
+This gives a human-auditable record of every position the backtest took, and is
+usually the fastest way to sanity-check that the strategy logic is doing what you
+think it's doing.
 
 ## Suggested first milestone
 
