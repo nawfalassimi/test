@@ -37,13 +37,14 @@ Assume Python (pandas, numpy, scipy, matplotlib/plotly) unless told otherwise.
 - The system must be easy to extend: new strategies, new signals, new currencies,
   new data sources, without touching core engine code
 - Daily risk metrics on the portfolio: P&L, drawdown, FX exposure, delta, vega, gamma
-- Final report with:
-  - Plots: cumulative P&L, drawdown (underwater chart), yearly P&L and drawdown,
-    daily P&L, daily delta, daily vega
-  - Metrics: total P&L, max drawdown (+ date), Sharpe, Calmar, Sortino,
-    best/worst 10-day P&L windows
-  - A trade blotter (Excel) listing every trade/clip with entry/exit dates, size,
-    signals, strategy, and exposure at entry (see "Output: trade blotter" below)
+- Two distinct outputs at the end of a backtest run:
+  1. **Performance report** — plots (cumulative P&L, drawdown/underwater chart,
+     yearly P&L and drawdown, daily P&L, daily delta, daily vega) and metrics
+     (total P&L, max drawdown + date, Sharpe, Calmar, Sortino, best/worst 10-day
+     P&L windows)
+  2. **Trade blotter (Excel)** — one row per trade/clip with entry/exit dates,
+     size, signals, strategy, and exposure at entry (see "Output: trade blotter"
+     below)
 
 ## Architecture — layered pipeline
 
@@ -186,10 +187,11 @@ fxbacktest/
   should roughly track `0.5·gamma·(dS)² − theta·dt` — if that identity doesn't
   hold, something's wrong before strategy signals even enter the picture.
 
-## Output: trade blotter (Excel)
+## Output 2: trade blotter (Excel)
 
-Alongside the performance report, produce a trade blotter as an Excel file — one
-row per trade/clip — with at least:
+The **performance report** (plots + metrics, described above) is one output.
+Alongside it, produce a **trade blotter** as an Excel file — one row per
+trade/clip — with at least:
 
 - Entry date, exit date
 - Currency pair, instrument type (option/spot/forward), strike, tenor/expiry
