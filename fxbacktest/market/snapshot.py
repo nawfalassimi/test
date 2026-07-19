@@ -41,16 +41,20 @@ class MarketSnapshot:
         return self.vol_surface.get_vol(delta_call, T)
 
 
-def build_market_snapshot(date: pd.Timestamp, quotes_df: pd.DataFrame,
+def build_market_snapshot(date: pd.Timestamp, quotes_df: pd.DataFrame, pair: str,
                           assumed_foreign_rate: float = 0.0) -> MarketSnapshot:
     """Pure function: the single construction point for MarketSnapshot, so every
-    layer of the pipeline sees the same immutable view of the world for a date."""
-    day_quotes = quotes_df[quotes_df["date"] == date]
+    layer of the pipeline sees the same immutable view of the world for a date.
+
+    quotes_df may contain quotes for multiple currency pairs (e.g. when
+    trading several pairs in one backtest) — always filter by BOTH date and
+    pair, never date alone, or rows from different pairs get silently mixed
+    together into one (nonsensical) curve/vol surface."""
+    day_quotes = quotes_df[(quotes_df["date"] == date) & (quotes_df["pair"] == pair)]
     if day_quotes.empty:
-        raise ValueError(f"no quotes found for date {date}")
+        raise ValueError(f"no quotes found for pair {pair} on date {date}")
 
     spot = float(day_quotes["spot"].iloc[0])
-    pair = day_quotes["pair"].iloc[0] if "pair" in day_quotes.columns else None
 
     tenor_fwd_points = day_quotes.set_index("tenor")["fwd_points"].to_dict()
     curve = FxForwardCurve(spot=spot, tenor_fwd_points=tenor_fwd_points)
