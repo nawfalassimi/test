@@ -27,7 +27,7 @@ def backtest_outputs():
         "EURUSD": PairCostSpec(option=OptionCostSpec(kind="vol_spread", vol_spread_bp=50.0),
                               spot=SpotCostSpec(spread_pips=1.0)),
     })
-    result_df, portfolio = run_backtest(df, strategy, hedger, pricer, cost_model=cost_model)
+    result_df, portfolio = run_backtest(df, [strategy], hedger, pricer, cost_model=cost_model)
     trade_events = extract_trade_events(portfolio)
     blotter = build_trade_blotter(portfolio, df, pricer)
     return result_df, portfolio, trade_events, blotter

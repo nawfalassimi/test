@@ -7,6 +7,7 @@ from fxbacktest.data.synthetic import SyntheticFxDataGenerator
 from fxbacktest.engine.daily_loop import run_backtest
 from fxbacktest.hedging.delta_hedger import DailyDeltaHedger
 from fxbacktest.instruments.spot import FxSpot
+from fxbacktest.market.market import Market
 from fxbacktest.market.snapshot import build_market_snapshot
 from fxbacktest.portfolio.portfolio import Portfolio
 from fxbacktest.portfolio.position import Position
@@ -19,11 +20,15 @@ def quotes_df():
     return SyntheticFxDataGenerator(start="2022-01-01", end="2022-09-30", seed=12).generate()
 
 
+def _market_for(date, quotes_df, pair="EURUSD"):
+    return Market(date=date, snapshots={pair: build_market_snapshot(date, quotes_df, pair)})
+
+
 def test_at_most_one_open_hedge_position_per_pair_after_each_day(quotes_df):
     pricer = GarmanKohlhagenPricer()
     strategy = ShortVolCarryStrategy()
     hedger = DailyDeltaHedger(pricer, mode="daily")
-    result_df, portfolio = run_backtest(quotes_df, strategy, hedger, pricer)
+    result_df, portfolio = run_backtest(quotes_df, [strategy], hedger, pricer)
 
     dates = sorted(quotes_df["date"].drop_duplicates().tolist())
     last_date = dates[-1]
@@ -44,8 +49,8 @@ def test_at_most_one_open_hedge_position_per_pair_after_each_day(quotes_df):
 def test_hedge_consolidation_is_nav_neutral(quotes_df):
     pricer = GarmanKohlhagenPricer()
     dates = sorted(quotes_df["date"].drop_duplicates().tolist())
-    snap_day1 = build_market_snapshot(dates[0], quotes_df)
-    snap_day2 = build_market_snapshot(dates[1], quotes_df)
+    market_day1 = _market_for(dates[0], quotes_df)
+    market_day2 = _market_for(dates[1], quotes_df)
 
     def make_positions():
         return [
@@ -56,13 +61,13 @@ def test_hedge_consolidation_is_nav_neutral(quotes_df):
         ]
 
     consolidated = Portfolio(positions=make_positions())
-    consolidated.mark_to_market(snap_day1, pricer)
-    consolidated.mark_to_market(snap_day2, pricer)
+    consolidated.mark_to_market(market_day1, pricer)
+    consolidated.mark_to_market(market_day2, pricer)
 
     unconsolidated = Portfolio(positions=make_positions())
     unconsolidated._consolidate_hedge_positions = lambda *args, **kwargs: None  # disable, isolate the effect
-    unconsolidated.mark_to_market(snap_day1, pricer)
-    unconsolidated.mark_to_market(snap_day2, pricer)
+    unconsolidated.mark_to_market(market_day1, pricer)
+    unconsolidated.mark_to_market(market_day2, pricer)
 
     assert consolidated.cum_pnl == pytest.approx(unconsolidated.cum_pnl)
     assert len([p for p in consolidated.positions if p.is_open]) == 1
@@ -76,7 +81,7 @@ def test_blotter_row_count_stays_linear_with_hedge_included():
     pricer = GarmanKohlhagenPricer()
     strategy = ShortVolCarryStrategy()
     hedger = DailyDeltaHedger(pricer, mode="daily")
-    result_df, portfolio = run_backtest(df, strategy, hedger, pricer)
+    result_df, portfolio = run_backtest(df, [strategy], hedger, pricer)
 
     n_dates = len(df["date"].drop_duplicates())
     blotter = build_trade_blotter(portfolio, df, pricer)

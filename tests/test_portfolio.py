@@ -9,14 +9,21 @@ from fxbacktest.data.synthetic import SyntheticFxDataGenerator
 from fxbacktest.execution.order import Order
 from fxbacktest.execution.transaction_costs import OptionCostSpec, PairCostSpec, TransactionCostModel
 from fxbacktest.instruments.option import FxVanillaOption
+from fxbacktest.instruments.spot import FxSpot
+from fxbacktest.market.market import Market
 from fxbacktest.market.snapshot import build_market_snapshot
 from fxbacktest.portfolio.portfolio import Portfolio
+from fxbacktest.portfolio.position import Position
 from fxbacktest.pricing.garman_kohlhagen import GarmanKohlhagenPricer
 
 
 @pytest.fixture(scope="module")
 def quotes_df():
     return SyntheticFxDataGenerator(start="2022-01-01", end="2022-03-31", seed=3).generate()
+
+
+def _market_for(date, quotes_df, pair="EURUSD"):
+    return Market(date=date, snapshots={pair: build_market_snapshot(date, quotes_df, pair)})
 
 
 def _straddle_orders(snapshot, strategy_id="short_vol_carry_1m"):
@@ -50,19 +57,20 @@ def test_selling_straddle_at_fair_value_creates_no_immediate_pnl(quotes_df):
     pricer = GarmanKohlhagenPricer()
     portfolio = Portfolio()
     dates = sorted(quotes_df["date"].drop_duplicates().tolist())
-    snapshot0 = build_market_snapshot(dates[0], quotes_df)
+    market0 = _market_for(dates[0], quotes_df)
+    snapshot0 = market0.snapshot("EURUSD")
 
-    baseline = portfolio.mark_to_market(snapshot0, pricer)
+    baseline = portfolio.mark_to_market(market0, pricer)
     assert baseline["pnl"] == pytest.approx(0.0)
     assert baseline["cum_pnl"] == pytest.approx(0.0)
 
     orders = _straddle_orders(snapshot0)
-    portfolio.execute(orders, snapshot0, pricer, _cost_model())
+    portfolio.execute(orders, market0, pricer, _cost_model())
 
     assert len(portfolio.positions) == 2
     assert portfolio.has_open_position("short_vol_carry_1m")
 
-    after_open = portfolio.mark_to_market(snapshot0, pricer)
+    after_open = portfolio.mark_to_market(market0, pricer)
     assert after_open["pnl"] == pytest.approx(0.0, abs=1e-6)
     assert portfolio.cum_pnl == pytest.approx(0.0, abs=1e-6)
 
@@ -71,13 +79,14 @@ def test_transaction_costs_create_immediate_negative_pnl(quotes_df):
     pricer = GarmanKohlhagenPricer()
     portfolio = Portfolio()
     dates = sorted(quotes_df["date"].drop_duplicates().tolist())
-    snapshot0 = build_market_snapshot(dates[0], quotes_df)
+    market0 = _market_for(dates[0], quotes_df)
+    snapshot0 = market0.snapshot("EURUSD")
 
-    portfolio.mark_to_market(snapshot0, pricer)
+    portfolio.mark_to_market(market0, pricer)
     orders = _straddle_orders(snapshot0)
-    portfolio.execute(orders, snapshot0, pricer, _cost_model(vol_spread_bp=50.0))
+    portfolio.execute(orders, market0, pricer, _cost_model(vol_spread_bp=50.0))
 
-    after_open = portfolio.mark_to_market(snapshot0, pricer)
+    after_open = portfolio.mark_to_market(market0, pricer)
     # Selling at a worse (lower) vol than fair mid should show an immediate cost drag.
     assert after_open["pnl"] < 0
     assert portfolio.cum_pnl < 0
@@ -87,15 +96,16 @@ def test_mark_to_market_next_day_reflects_market_move(quotes_df):
     pricer = GarmanKohlhagenPricer()
     portfolio = Portfolio()
     dates = sorted(quotes_df["date"].drop_duplicates().tolist())
-    snapshot0 = build_market_snapshot(dates[0], quotes_df)
-    snapshot1 = build_market_snapshot(dates[1], quotes_df)
+    market0 = _market_for(dates[0], quotes_df)
+    market1 = _market_for(dates[1], quotes_df)
+    snapshot0 = market0.snapshot("EURUSD")
 
-    portfolio.mark_to_market(snapshot0, pricer)
+    portfolio.mark_to_market(market0, pricer)
     orders = _straddle_orders(snapshot0)
-    portfolio.execute(orders, snapshot0, pricer, _cost_model())
-    portfolio.mark_to_market(snapshot0, pricer)
+    portfolio.execute(orders, market0, pricer, _cost_model())
+    portfolio.mark_to_market(market0, pricer)
 
-    next_day = portfolio.mark_to_market(snapshot1, pricer)
+    next_day = portfolio.mark_to_market(market1, pricer)
     assert math.isfinite(next_day["pnl"])
     assert next_day["delta"] != 0 or next_day["gamma"] != 0
 
@@ -104,10 +114,11 @@ def test_cost_paid_is_zero_with_zero_cost_model(quotes_df):
     pricer = GarmanKohlhagenPricer()
     portfolio = Portfolio()
     dates = sorted(quotes_df["date"].drop_duplicates().tolist())
-    snapshot0 = build_market_snapshot(dates[0], quotes_df)
+    market0 = _market_for(dates[0], quotes_df)
+    snapshot0 = market0.snapshot("EURUSD")
 
     orders = _straddle_orders(snapshot0)
-    portfolio.execute(orders, snapshot0, pricer, _cost_model())
+    portfolio.execute(orders, market0, pricer, _cost_model())
 
     assert all(pos.cost_paid == 0.0 for pos in portfolio.positions)
 
@@ -116,7 +127,8 @@ def test_cost_paid_is_zero_with_zero_cost_model(quotes_df):
 def test_cost_paid_matches_abs_adjustment_for_both_sides(quotes_df, side):
     pricer = GarmanKohlhagenPricer()
     dates = sorted(quotes_df["date"].drop_duplicates().tolist())
-    snapshot0 = build_market_snapshot(dates[0], quotes_df)
+    market0 = _market_for(dates[0], quotes_df)
+    snapshot0 = market0.snapshot("EURUSD")
 
     T_days = 30
     K = snapshot0.forward(T_days / 365)
@@ -127,10 +139,14 @@ def test_cost_paid_matches_abs_adjustment_for_both_sides(quotes_df, side):
 
     cost_model = _cost_model(vol_spread_bp=50.0)
     portfolio = Portfolio()
-    portfolio.execute([order], snapshot0, pricer, cost_model)
+    portfolio.execute([order], market0, pricer, cost_model)
 
-    fair_price = portfolio.instrument_value(call, snapshot0, pricer)
-    vega = pricer.greeks(call, snapshot0).vega
+    # EURUSD's quote currency IS USD (rate 1.0), so the USD-converted values
+    # below are numerically identical to the pre-multi-currency native ones —
+    # this test still exercises real conversion logic (Portfolio.instrument_value/
+    # instrument_greeks go through Market.usd_rate), just at a degenerate rate.
+    fair_price = portfolio.instrument_value(call, market0, pricer)
+    vega = portfolio.instrument_greeks(call, market0, pricer).vega
     expected_adjustment = cost_model.option_cost("EURUSD", side, fair_price, vega)
 
     assert portfolio.positions[0].cost_paid == pytest.approx(abs(expected_adjustment))
@@ -141,16 +157,115 @@ def test_mark_to_market_friction_cost_sums_same_day_entries(quotes_df):
     pricer = GarmanKohlhagenPricer()
     portfolio = Portfolio()
     dates = sorted(quotes_df["date"].drop_duplicates().tolist())
-    snapshot0 = build_market_snapshot(dates[0], quotes_df)
-    snapshot1 = build_market_snapshot(dates[1], quotes_df)
+    market0 = _market_for(dates[0], quotes_df)
+    market1 = _market_for(dates[1], quotes_df)
+    snapshot0 = market0.snapshot("EURUSD")
 
     orders = _straddle_orders(snapshot0)
-    portfolio.execute(orders, snapshot0, pricer, _cost_model(vol_spread_bp=50.0))
+    portfolio.execute(orders, market0, pricer, _cost_model(vol_spread_bp=50.0))
 
-    entry_day = portfolio.mark_to_market(snapshot0, pricer)
+    entry_day = portfolio.mark_to_market(market0, pricer)
     expected_cost = sum(pos.cost_paid for pos in portfolio.positions)
     assert entry_day["friction_cost"] == pytest.approx(expected_cost)
     assert entry_day["friction_cost"] > 0.0
 
-    next_day = portfolio.mark_to_market(snapshot1, pricer)
+    next_day = portfolio.mark_to_market(market1, pricer)
     assert next_day["friction_cost"] == pytest.approx(0.0)
+
+
+def test_instrument_value_converts_eurhuf_option_to_usd():
+    """EURHUF's quote currency (HUF) isn't USD, so this exercises the one-hop
+    cross-conversion via a EURUSD bridge — not the degenerate quote==USD case
+    the EURUSD-only tests above all hit."""
+    pricer = GarmanKohlhagenPricer()
+    date = pd.Timestamp("2022-01-03")
+    eurhuf_df = SyntheticFxDataGenerator(pair="EURHUF", start="2022-01-01", end="2022-03-31",
+                                         seed=20, base_spot=400.0).generate()
+    eurusd_df = SyntheticFxDataGenerator(pair="EURUSD", start="2022-01-01", end="2022-03-31", seed=21).generate()
+    eurhuf_snap = build_market_snapshot(date, eurhuf_df, "EURHUF")
+    eurusd_snap = build_market_snapshot(date, eurusd_df, "EURUSD")
+    market = Market(date=date, snapshots={"EURHUF": eurhuf_snap, "EURUSD": eurusd_snap})
+
+    K = eurhuf_snap.forward(30 / 365)
+    expiry = date + pd.Timedelta(days=30)
+    option = FxVanillaOption(pair="EURHUF", strike=K, expiry=expiry, option_type="call",
+                             notional=1_000_000, trade_date=date)
+
+    portfolio = Portfolio()
+    native_price = pricer.price(option, eurhuf_snap)  # HUF
+    usd_price = portfolio.instrument_value(option, market, pricer)
+
+    expected_usd_rate = eurusd_snap.spot / eurhuf_snap.spot  # USD per HUF, via the EUR bridge
+    assert usd_price == pytest.approx(native_price * expected_usd_rate)
+
+    native_greeks = pricer.greeks(option, eurhuf_snap)
+    usd_greeks = portfolio.instrument_greeks(option, market, pricer)
+    assert usd_greeks.delta == pytest.approx(native_greeks.delta * eurusd_snap.spot)  # base=EUR
+    assert usd_greeks.vega == pytest.approx(native_greeks.vega * expected_usd_rate)  # quote=HUF
+
+
+def test_instrument_value_converts_usdjpy_option_to_usd():
+    """USDJPY's quote currency (JPY) isn't USD either, but its BASE currency
+    IS USD — the inverse-rate branch of Market.usd_rate, no bridge needed."""
+    pricer = GarmanKohlhagenPricer()
+    date = pd.Timestamp("2022-01-03")
+    df = SyntheticFxDataGenerator(pair="USDJPY", start="2022-01-01", end="2022-03-31",
+                                  seed=22, base_spot=110.0).generate()
+    snap = build_market_snapshot(date, df, "USDJPY")
+    market = Market(date=date, snapshots={"USDJPY": snap})
+
+    K = snap.forward(30 / 365)
+    expiry = date + pd.Timedelta(days=30)
+    option = FxVanillaOption(pair="USDJPY", strike=K, expiry=expiry, option_type="put",
+                             notional=1_000_000, trade_date=date)
+
+    portfolio = Portfolio()
+    native_price = pricer.price(option, snap)  # JPY
+    usd_price = portfolio.instrument_value(option, market, pricer)
+    assert usd_price == pytest.approx(native_price / snap.spot)  # USD per JPY = 1/spot(USDJPY)
+
+    native_greeks = pricer.greeks(option, snap)
+    usd_greeks = portfolio.instrument_greeks(option, market, pricer)
+    assert usd_greeks.delta == pytest.approx(native_greeks.delta * 1.0)  # base=USD, rate 1.0
+    assert usd_greeks.vega == pytest.approx(native_greeks.vega / snap.spot)  # quote=JPY
+
+
+def test_has_open_position_pair_filter_matches_same_pair():
+    portfolio = Portfolio(positions=[
+        Position(instrument=FxSpot(pair="EURUSD", notional=0.0), qty=1.0, clip_id="c1",
+                strategy_id="s", entry_date=pd.Timestamp("2022-01-03"), entry_price=0.0),
+    ])
+    assert portfolio.has_open_position("s", pair="EURUSD")
+
+
+def test_has_open_position_pair_filter_excludes_other_pair():
+    """Regression test for the exact bug being fixed: an open EURUSD position
+    must not read as open when queried for a different pair under the same
+    strategy_id, even though the unfiltered call still reports it as open."""
+    portfolio = Portfolio(positions=[
+        Position(instrument=FxSpot(pair="EURUSD", notional=0.0), qty=1.0, clip_id="c1",
+                strategy_id="s", entry_date=pd.Timestamp("2022-01-03"), entry_price=0.0),
+    ])
+    assert not portfolio.has_open_position("s", pair="USDJPY")
+    assert portfolio.has_open_position("s")  # unfiltered call keeps old behavior
+
+
+def test_native_delta_by_pair_groups_correctly_and_stays_native(quotes_df):
+    pricer = GarmanKohlhagenPricer()
+    date = sorted(quotes_df["date"].drop_duplicates().tolist())[0]
+    eur_snap = build_market_snapshot(date, quotes_df, "EURUSD")
+    jpy_df = SyntheticFxDataGenerator(pair="USDJPY", start="2022-01-01", end="2022-03-31",
+                                      seed=30, base_spot=110.0).generate()
+    jpy_snap = build_market_snapshot(date, jpy_df, "USDJPY")
+    market = Market(date=date, snapshots={"EURUSD": eur_snap, "USDJPY": jpy_snap})
+
+    portfolio = Portfolio(positions=[
+        Position(instrument=FxSpot(pair="EURUSD", notional=100_000.0), qty=1.0,
+                clip_id="c1", strategy_id="s", entry_date=date, entry_price=0.0),
+        Position(instrument=FxSpot(pair="USDJPY", notional=50_000.0), qty=-1.0,
+                clip_id="c2", strategy_id="s", entry_date=date, entry_price=0.0),
+    ])
+
+    natives = portfolio.native_delta_by_pair(market, pricer)
+    # native (unconverted) deltas — NOT run through usd_rate, unlike net_delta
+    assert natives == {"EURUSD": 100_000.0, "USDJPY": -50_000.0}

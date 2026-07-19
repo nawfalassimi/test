@@ -7,15 +7,16 @@ if TYPE_CHECKING:
     import pandas as pd
 
     from fxbacktest.execution.order import Order
-    from fxbacktest.market.snapshot import MarketSnapshot
+    from fxbacktest.market.market import Market
     from fxbacktest.portfolio.portfolio import Portfolio
 
 
 class Strategy(ABC):
     strategy_id: str
+    required_pairs: List[str]
 
     @abstractmethod
-    def generate_orders(self, date: "pd.Timestamp", snapshot: "MarketSnapshot",
+    def generate_orders(self, date: "pd.Timestamp", market: "Market",
                         portfolio: "Portfolio") -> List["Order"]:
         ...
 

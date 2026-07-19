@@ -51,7 +51,7 @@ def main() -> None:
     cost_model = TransactionCostModel.from_config(config["transaction_costs"])
 
     result_df, portfolio = run_backtest(
-        quotes_df, strategy, hedger, pricer,
+        quotes_df, [strategy], hedger, pricer,
         assumed_foreign_rate=config["assumed_foreign_rate"],
         cost_model=cost_model,
     )

@@ -6,6 +6,7 @@ import pandas as pd
 
 from fxbacktest.instruments.option import FxVanillaOption
 from fxbacktest.instruments.spot import FxSpot
+from fxbacktest.market.market import Market, bridge_pairs_for
 from fxbacktest.market.snapshot import build_market_snapshot
 
 if TYPE_CHECKING:
@@ -35,7 +36,7 @@ def _current_vol(position: "Position", snapshot) -> Optional[float]:
     return snapshot.implied_vol_for_strike(position.instrument.strike, T)
 
 
-def _blotter_row(position: "Position", date: pd.Timestamp, snapshot, pricer: "Pricer",
+def _blotter_row(position: "Position", date: pd.Timestamp, market: Market, pricer: "Pricer",
                   portfolio: "Portfolio") -> dict:
     if position.entry_date == date:
         status = "new"
@@ -44,8 +45,9 @@ def _blotter_row(position: "Position", date: pd.Timestamp, snapshot, pricer: "Pr
     else:
         status = "existing"
 
-    current_price = portfolio.instrument_value(position.instrument, snapshot, pricer)
-    greeks = portfolio.instrument_greeks(position.instrument, snapshot, pricer)
+    snapshot = market.snapshot(position.instrument.pair)
+    current_price = portfolio.instrument_value(position.instrument, market, pricer)
+    greeks = portfolio.instrument_greeks(position.instrument, market, pricer)
 
     return {
         "trade_id": _trade_id(position),
@@ -84,10 +86,17 @@ def build_trade_blotter(portfolio: "Portfolio", quotes_df: pd.DataFrame, pricer:
     O(days^2) blow-up from when hedge positions accumulated forever. Pass
     exclude_strategy_ids=("hedge",) to hide hedge rows if only strategy trades
     are wanted (entry/current implied vol is always None for a spot position).
+
+    Builds one Market per date, covering every pair any position actually
+    trades plus USD-conversion bridge pairs, mirroring run_backtest's own
+    pair-loading logic.
     """
     positions = [pos for pos in portfolio.positions if pos.strategy_id not in set(exclude_strategy_ids)]
     if not positions:
         return pd.DataFrame(columns=BLOTTER_COLUMNS)
+
+    traded_pairs = {pos.instrument.pair for pos in positions}
+    required_pairs = traded_pairs | bridge_pairs_for(traded_pairs)
 
     dates = pd.DatetimeIndex(sorted(quotes_df["date"].drop_duplicates().tolist()))
     last_date = dates[-1]
@@ -100,7 +109,9 @@ def build_trade_blotter(portfolio: "Portfolio", quotes_df: pd.DataFrame, pricer:
         ]
         if not active:
             continue
-        snapshot = build_market_snapshot(date, quotes_df, assumed_foreign_rate)
-        rows.extend(_blotter_row(pos, date, snapshot, pricer, portfolio) for pos in active)
+        snapshots = {pair: build_market_snapshot(date, quotes_df, pair, assumed_foreign_rate)
+                    for pair in required_pairs}
+        market = Market(date=date, snapshots=snapshots)
+        rows.extend(_blotter_row(pos, date, market, pricer, portfolio) for pos in active)
 
     return pd.DataFrame(rows, columns=BLOTTER_COLUMNS)

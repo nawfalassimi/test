@@ -20,7 +20,7 @@ def test_new_entry_is_hedged_same_day_not_next_day(quotes_df):
     pricer = GarmanKohlhagenPricer()
     strategy = ShortVolCarryStrategy()
     hedger = DailyDeltaHedger(pricer, mode="daily")
-    result, _portfolio = run_backtest(quotes_df, strategy, hedger, pricer)
+    result, _portfolio = run_backtest(quotes_df, [strategy], hedger, pricer)
 
     mondays = result[result["date"].dt.weekday == 0]
     assert len(mondays) > 0
@@ -38,7 +38,7 @@ def test_daily_records_reflect_end_of_day_hedged_state(quotes_df):
     pricer = GarmanKohlhagenPricer()
     strategy = ShortVolCarryStrategy()
     hedger = DailyDeltaHedger(pricer, mode="daily")
-    result, _portfolio = run_backtest(quotes_df, strategy, hedger, pricer)
+    result, _portfolio = run_backtest(quotes_df, [strategy], hedger, pricer)
 
     with_position = result[result["gamma"] != 0]
     assert len(with_position) > 10

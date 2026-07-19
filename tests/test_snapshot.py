@@ -16,15 +16,15 @@ def quotes_df():
 
 def test_snapshot_is_immutable(quotes_df):
     date = quotes_df["date"].iloc[0]
-    snapshot = build_market_snapshot(date, quotes_df)
+    snapshot = build_market_snapshot(date, quotes_df, "EURUSD")
     with pytest.raises(dataclasses.FrozenInstanceError):
         snapshot.spot = 999.0
 
 
 def test_build_market_snapshot_is_deterministic(quotes_df):
     date = quotes_df["date"].iloc[20]
-    snap_a = build_market_snapshot(date, quotes_df)
-    snap_b = build_market_snapshot(date, quotes_df)
+    snap_a = build_market_snapshot(date, quotes_df, "EURUSD")
+    snap_b = build_market_snapshot(date, quotes_df, "EURUSD")
 
     assert snap_a.spot == snap_b.spot
     assert snap_a.r_d == snap_b.r_d
@@ -35,7 +35,7 @@ def test_build_market_snapshot_is_deterministic(quotes_df):
 
 def test_snapshot_pricing_helpers_are_self_consistent(quotes_df):
     date = quotes_df["date"].iloc[20]
-    snapshot = build_market_snapshot(date, quotes_df)
+    snapshot = build_market_snapshot(date, quotes_df, "EURUSD")
 
     T = 30 / 365
     K = snapshot.forward(T)
