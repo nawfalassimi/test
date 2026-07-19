@@ -99,7 +99,7 @@ class Portfolio:
             total_vega += pos.qty * greeks.vega
             total_theta += pos.qty * greeks.theta
 
-            if isinstance(pos.instrument, FxVanillaOption) and pos.instrument.is_expired(market.date):
+            if pos.pending_close or (isinstance(pos.instrument, FxVanillaOption) and pos.instrument.is_expired(market.date)):
                 pos.is_open = False
                 pos.exit_date = market.date
                 pos.exit_price = value
@@ -165,6 +165,20 @@ class Portfolio:
     def has_open_position(self, strategy_id: str, *, pair: Optional[str] = None) -> bool:
         return any(pos.is_open and pos.strategy_id == strategy_id
                   and (pair is None or pos.instrument.pair == pair) for pos in self.positions)
+
+    def mark_for_early_close(self, strategy_id: str, pair: str) -> None:
+        """Flag every open (strategy_id, pair) position for closing at the
+        next mark_to_market call, rather than closing it immediately here.
+        Closing eagerly (inside a strategy's generate_orders, which runs
+        BEFORE mark_to_market each day) would make mark_to_market's accrual
+        loop skip the position (it already ignores is_open=False positions)
+        before that day's P&L delta is computed — silently dropping the
+        final day's mark-to-market move. This mirrors the lazy pattern
+        already used for option expiry (settled inside mark_to_market, not
+        the moment expiry is detected)."""
+        for pos in self.positions:
+            if pos.is_open and pos.strategy_id == strategy_id and pos.instrument.pair == pair:
+                pos.pending_close = True
 
     def execute(self, orders: List["Order"], market: "Market", pricer: "Pricer",
                 cost_model: Optional[TransactionCostModel] = None) -> None:

@@ -58,6 +58,15 @@ def test_daily_hedge_flattens_net_delta(quotes_df):
     assert delta_after == pytest.approx(0.0, abs=1e-6)
 
 
+def test_none_mode_never_hedges(quotes_df):
+    market, portfolio, pricer = _market_with_open_straddle(quotes_df)
+    delta_before = abs(portfolio.net_delta(market, pricer))
+    assert delta_before > 0  # a genuinely open, unhedged straddle has nonzero delta
+
+    hedger = DailyDeltaHedger(pricer, mode="none")
+    assert hedger.rehedge_orders(market.date, market, portfolio) == []
+
+
 def test_threshold_mode_skips_hedge_below_limit(quotes_df):
     market, portfolio, pricer = _market_with_open_straddle(quotes_df)
     delta_before = abs(portfolio.net_delta(market, pricer))

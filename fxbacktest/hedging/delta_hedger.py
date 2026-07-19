@@ -18,7 +18,8 @@ class DailyDeltaHedger:
     """Standing hedging process, independent of any strategy. In "daily" mode,
     flattens net portfolio delta to (near) zero every trading day, per pair.
     In "threshold" mode, only trades a pair whose USD-equivalent delta exceeds
-    a configured limit. Hedges are always sized in each pair's own native
+    a configured limit. In "none" mode, never hedges. Hedges are always sized
+    in each pair's own native
     (base-currency) notional — you cannot flatten EUR risk with a USDJPY spot
     trade, so hedging must stay pair-by-pair even though risk is reported in
     USD (see Portfolio.native_delta_by_pair vs Portfolio.net_delta)."""
@@ -32,6 +33,9 @@ class DailyDeltaHedger:
 
     def rehedge_orders(self, date: pd.Timestamp, market: "Market",
                         portfolio: "Portfolio") -> List[Order]:
+        if self.mode == "none":
+            return []
+
         native_deltas = portfolio.native_delta_by_pair(market, self.pricer)
 
         orders = []

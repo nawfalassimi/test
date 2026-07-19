@@ -1,0 +1,24 @@
+pairs: [EURUSD]
+assumed_foreign_rate: 0.0
+
+data:
+  start: "2022-01-01"
+  end: "2023-12-29"
+  seed: 42
+
+vix_data:
+  start: "2022-01-01"
+  end: "2023-12-29"
+  seed: 123
+
+strategy:
+  name: short_vol_signal
+  tenor: "3M"
+  target_delta: 0.10
+  notional: 1000000
+
+hedging:
+  mode: none # none | daily | threshold
+  threshold: 500000 # only used when mode == threshold
+
+execution_timing: same_day_close

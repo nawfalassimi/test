@@ -250,6 +250,55 @@ def test_has_open_position_pair_filter_excludes_other_pair():
     assert portfolio.has_open_position("s")  # unfiltered call keeps old behavior
 
 
+def test_mark_for_early_close_defers_to_next_mark_to_market(quotes_df):
+    """Regression test for the P&L-leak bug a naive eager close would cause:
+    mark_for_early_close must only flag the position; the FULL last-mark-to-
+    close move must still be accrued by the mark_to_market call that actually
+    processes the flag, not silently dropped because is_open flips too early."""
+    pricer = GarmanKohlhagenPricer()
+    portfolio = Portfolio()
+    dates = sorted(quotes_df["date"].drop_duplicates().tolist())
+    market0 = _market_for(dates[0], quotes_df)
+    market1 = _market_for(dates[1], quotes_df)
+    snapshot0 = market0.snapshot("EURUSD")
+
+    orders = _straddle_orders(snapshot0)
+    portfolio.execute(orders, market0, pricer, _cost_model())
+    portfolio.mark_to_market(market0, pricer)
+
+    assert portfolio.has_open_position("short_vol_carry_1m")
+
+    portfolio.mark_for_early_close("short_vol_carry_1m", "EURUSD")
+    # Still open immediately after flagging — the close is lazy.
+    assert portfolio.has_open_position("short_vol_carry_1m")
+
+    last_mark_prices = {id(pos): pos.last_mark_price for pos in portfolio.positions}
+    expected_values = {id(pos): portfolio.instrument_value(pos.instrument, market1, pricer)
+                      for pos in portfolio.positions}
+    expected_pnl = sum(pos.qty * (expected_values[id(pos)] - last_mark_prices[id(pos)])
+                       for pos in portfolio.positions if pos.is_open)
+
+    next_day = portfolio.mark_to_market(market1, pricer)
+    assert next_day["pnl"] == pytest.approx(expected_pnl)
+    assert not portfolio.has_open_position("short_vol_carry_1m")
+    assert all(not pos.is_open and pos.exit_date == market1.date for pos in portfolio.positions)
+
+
+def test_mark_for_early_close_only_matches_strategy_id_and_pair():
+    portfolio = Portfolio(positions=[
+        Position(instrument=FxSpot(pair="EURUSD", notional=0.0), qty=1.0, clip_id="c1",
+                strategy_id="s", entry_date=pd.Timestamp("2022-01-03"), entry_price=0.0),
+        Position(instrument=FxSpot(pair="USDJPY", notional=0.0), qty=1.0, clip_id="c2",
+                strategy_id="s", entry_date=pd.Timestamp("2022-01-03"), entry_price=0.0),
+        Position(instrument=FxSpot(pair="EURUSD", notional=0.0), qty=1.0, clip_id="c3",
+                strategy_id="other", entry_date=pd.Timestamp("2022-01-03"), entry_price=0.0),
+    ])
+    portfolio.mark_for_early_close("s", "EURUSD")
+
+    flagged = {pos.clip_id for pos in portfolio.positions if pos.pending_close}
+    assert flagged == {"c1"}
+
+
 def test_native_delta_by_pair_groups_correctly_and_stays_native(quotes_df):
     pricer = GarmanKohlhagenPricer()
     date = sorted(quotes_df["date"].drop_duplicates().tolist())[0]
