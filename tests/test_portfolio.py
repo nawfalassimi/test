@@ -98,3 +98,59 @@ def test_mark_to_market_next_day_reflects_market_move(quotes_df):
     next_day = portfolio.mark_to_market(snapshot1, pricer)
     assert math.isfinite(next_day["pnl"])
     assert next_day["delta"] != 0 or next_day["gamma"] != 0
+
+
+def test_cost_paid_is_zero_with_zero_cost_model(quotes_df):
+    pricer = GarmanKohlhagenPricer()
+    portfolio = Portfolio()
+    dates = sorted(quotes_df["date"].drop_duplicates().tolist())
+    snapshot0 = build_market_snapshot(dates[0], quotes_df)
+
+    orders = _straddle_orders(snapshot0)
+    portfolio.execute(orders, snapshot0, pricer, _cost_model())
+
+    assert all(pos.cost_paid == 0.0 for pos in portfolio.positions)
+
+
+@pytest.mark.parametrize("side", ["buy", "sell"])
+def test_cost_paid_matches_abs_adjustment_for_both_sides(quotes_df, side):
+    pricer = GarmanKohlhagenPricer()
+    dates = sorted(quotes_df["date"].drop_duplicates().tolist())
+    snapshot0 = build_market_snapshot(dates[0], quotes_df)
+
+    T_days = 30
+    K = snapshot0.forward(T_days / 365)
+    expiry = snapshot0.date + pd.Timedelta(days=T_days)
+    call = FxVanillaOption(pair="EURUSD", strike=K, expiry=expiry, option_type="call",
+                           notional=1_000_000, trade_date=snapshot0.date)
+    order = Order(instrument=call, side=side, qty=1.0, clip_id="c1", strategy_id="s")
+
+    cost_model = _cost_model(vol_spread_bp=50.0)
+    portfolio = Portfolio()
+    portfolio.execute([order], snapshot0, pricer, cost_model)
+
+    fair_price = portfolio.instrument_value(call, snapshot0, pricer)
+    vega = pricer.greeks(call, snapshot0).vega
+    expected_adjustment = cost_model.option_cost("EURUSD", side, fair_price, vega)
+
+    assert portfolio.positions[0].cost_paid == pytest.approx(abs(expected_adjustment))
+    assert portfolio.positions[0].cost_paid > 0.0
+
+
+def test_mark_to_market_friction_cost_sums_same_day_entries(quotes_df):
+    pricer = GarmanKohlhagenPricer()
+    portfolio = Portfolio()
+    dates = sorted(quotes_df["date"].drop_duplicates().tolist())
+    snapshot0 = build_market_snapshot(dates[0], quotes_df)
+    snapshot1 = build_market_snapshot(dates[1], quotes_df)
+
+    orders = _straddle_orders(snapshot0)
+    portfolio.execute(orders, snapshot0, pricer, _cost_model(vol_spread_bp=50.0))
+
+    entry_day = portfolio.mark_to_market(snapshot0, pricer)
+    expected_cost = sum(pos.cost_paid for pos in portfolio.positions)
+    assert entry_day["friction_cost"] == pytest.approx(expected_cost)
+    assert entry_day["friction_cost"] > 0.0
+
+    next_day = portfolio.mark_to_market(snapshot1, pricer)
+    assert next_day["friction_cost"] == pytest.approx(0.0)

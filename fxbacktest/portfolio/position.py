@@ -18,6 +18,7 @@ class Position:
     entry_price: float  # actual executed price (post transaction-cost adjustment)
     entry_vol: Optional[float] = None
     last_mark_price: Optional[float] = None  # last price used to accrue P&L; defaults to entry_price
+    cost_paid: float = 0.0  # dollar transaction cost at execution, always >= 0; set once, never re-derived
     is_open: bool = True
     exit_date: Optional[pd.Timestamp] = None
     exit_price: Optional[float] = None

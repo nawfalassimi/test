@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Optional
+from typing import NamedTuple, Optional
 
 import pandas as pd
 
@@ -10,6 +10,11 @@ from fxbacktest.market.snapshot import build_market_snapshot
 from fxbacktest.portfolio.portfolio import Portfolio
 from fxbacktest.pricing.base import Pricer
 from fxbacktest.strategies.base import Strategy
+
+
+class BacktestResult(NamedTuple):
+    result_df: pd.DataFrame
+    portfolio: Portfolio
 
 # Execution timing: same-day-close. Orders are generated from the date-T
 # snapshot and fill at date-T close — no intraday/next-close lag in v1. This
@@ -29,7 +34,7 @@ from fxbacktest.strategies.base import Strategy
 
 def run_backtest(quotes_df: pd.DataFrame, strategy: Strategy, hedger: DailyDeltaHedger,
                   pricer: Pricer, assumed_foreign_rate: float = 0.0,
-                  cost_model: Optional[TransactionCostModel] = None) -> pd.DataFrame:
+                  cost_model: Optional[TransactionCostModel] = None) -> BacktestResult:
     cost_model = cost_model or TransactionCostModel.zero()
     portfolio = Portfolio()
     dates = pd.DatetimeIndex(sorted(quotes_df["date"].drop_duplicates().tolist()))
@@ -47,4 +52,4 @@ def run_backtest(quotes_df: pd.DataFrame, strategy: Strategy, hedger: DailyDelta
         daily_metrics = portfolio.mark_to_market(snapshot, pricer)
         records.append(daily_metrics)
 
-    return pd.DataFrame(records)
+    return BacktestResult(pd.DataFrame(records), portfolio)

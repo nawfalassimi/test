@@ -50,7 +50,7 @@ def test_daily_hedged_pnl_tracks_gamma_theta_identity():
     pricer = GarmanKohlhagenPricer()
     strategy = ShortVolCarryStrategy()
     hedger = DailyDeltaHedger(pricer, mode="daily")
-    result = run_backtest(df, strategy, hedger, pricer)
+    result, _portfolio = run_backtest(df, strategy, hedger, pricer)
 
     result["spot"] = result["date"].map(spot)
     result["dS"] = result["spot"].diff()
@@ -91,7 +91,7 @@ def test_full_backtest_runs_end_to_end_with_costs_and_noise():
         "EURUSD": PairCostSpec(option=OptionCostSpec(kind="vol_spread", vol_spread_bp=50.0),
                               spot=SpotCostSpec(spread_pips=1.0)),
     })
-    result = run_backtest(df, strategy, hedger, pricer, assumed_foreign_rate=0.0, cost_model=cost_model)
+    result, portfolio = run_backtest(df, strategy, hedger, pricer, assumed_foreign_rate=0.0, cost_model=cost_model)
 
     assert len(result) > 400
     assert result["pnl"].apply(math.isfinite).all()
@@ -99,3 +99,9 @@ def test_full_backtest_runs_end_to_end_with_costs_and_noise():
 
     notional = 1_000_000
     assert result["cum_pnl"].abs().max() < notional  # no runaway blow-up
+
+    assert len(portfolio.positions) > 0
+    assert all(pos.cost_paid >= 0 for pos in portfolio.positions)
+    assert result["friction_cost"].sum() == pytest.approx(
+        sum(pos.cost_paid for pos in portfolio.positions)
+    )

@@ -1,7 +1,8 @@
 from __future__ import annotations
 
+from collections import defaultdict
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Dict, List, Optional
+from typing import TYPE_CHECKING, Dict, Iterable, List, Optional
 
 from fxbacktest.execution.transaction_costs import TransactionCostModel
 from fxbacktest.instruments.option import FxVanillaOption
@@ -14,6 +15,8 @@ if TYPE_CHECKING:
     from fxbacktest.market.snapshot import MarketSnapshot
     from fxbacktest.pricing.base import Pricer
 
+_HEDGE_FLAT_EPS = 1e-9
+
 
 @dataclass
 class Portfolio:
@@ -23,12 +26,12 @@ class Portfolio:
     positions: List[Position] = field(default_factory=list)
     cum_pnl: float = 0.0
 
-    def _instrument_value(self, instrument, snapshot: "MarketSnapshot", pricer: "Pricer") -> float:
+    def instrument_value(self, instrument, snapshot: "MarketSnapshot", pricer: "Pricer") -> float:
         if isinstance(instrument, FxSpot):
             return instrument.notional * snapshot.spot
         return pricer.price(instrument, snapshot)
 
-    def _instrument_greeks(self, instrument, snapshot: "MarketSnapshot", pricer: "Pricer") -> Greeks:
+    def instrument_greeks(self, instrument, snapshot: "MarketSnapshot", pricer: "Pricer") -> Greeks:
         if isinstance(instrument, FxSpot):
             return Greeks(delta=instrument.notional, gamma=0.0, vega=0.0, theta=0.0)
         return pricer.greeks(instrument, snapshot)
@@ -36,14 +39,18 @@ class Portfolio:
     def mark_to_market(self, snapshot: "MarketSnapshot", pricer: "Pricer") -> Dict[str, float]:
         """Accrue each open position's P&L since it was last marked (or since
         entry, for a position opened earlier today), update its last_mark_price,
-        and settle any option that has matured as of this date. Call once per
+        settle any option that has matured as of this date, and consolidate any
+        open hedge positions into a single net position per pair. Call once per
         day, after that day's trades, so this reflects the end-of-day book."""
         daily_pnl = total_delta = total_gamma = total_vega = total_theta = 0.0
+        friction_cost = 0.0
         for pos in self.positions:
+            if pos.entry_date == snapshot.date:
+                friction_cost += pos.cost_paid
             if not pos.is_open:
                 continue
-            value = self._instrument_value(pos.instrument, snapshot, pricer)
-            greeks = self._instrument_greeks(pos.instrument, snapshot, pricer)
+            value = self.instrument_value(pos.instrument, snapshot, pricer)
+            greeks = self.instrument_greeks(pos.instrument, snapshot, pricer)
 
             daily_pnl += pos.qty * (value - pos.last_mark_price)
             pos.last_mark_price = value
@@ -60,15 +67,57 @@ class Portfolio:
                 pos.realized_pnl = pos.qty * (value - pos.entry_price)
 
         self.cum_pnl += daily_pnl
+        self._consolidate_hedge_positions(snapshot, pricer)
         return {
             "date": snapshot.date, "pnl": daily_pnl, "cum_pnl": self.cum_pnl,
             "delta": total_delta, "gamma": total_gamma, "vega": total_vega, "theta": total_theta,
-            "fx_exposure": total_delta,
+            "fx_exposure": total_delta, "friction_cost": friction_cost,
         }
+
+    def _consolidate_hedge_positions(self, snapshot: "MarketSnapshot", pricer: "Pricer",
+                                      hedge_strategy_ids: Iterable[str] = ("hedge",)) -> None:
+        """Collapse all open hedge-strategy FxSpot positions per pair into a
+        single net position. Must run AFTER the accrual loop above (in
+        mark_to_market), so every constituent's last_mark_price already equals
+        its current fair value — closing them here is NAV-neutral bookkeeping
+        (the same pattern as the expired-option settlement above it), not a
+        market trade: the real transaction cost was already charged on the
+        incremental hedge order that executed earlier the same day."""
+        hedge_ids = set(hedge_strategy_ids)
+        by_pair: Dict[str, List[Position]] = defaultdict(list)
+        for pos in self.positions:
+            if pos.is_open and pos.strategy_id in hedge_ids and isinstance(pos.instrument, FxSpot):
+                by_pair[pos.instrument.pair].append(pos)
+
+        for pair, positions in by_pair.items():
+            if len(positions) <= 1:
+                continue
+
+            combined_exposure = sum(p.qty * p.instrument.notional for p in positions)
+            strategy_id = positions[0].strategy_id
+            for p in positions:
+                value = self.instrument_value(p.instrument, snapshot, pricer)
+                p.is_open = False
+                p.exit_date = snapshot.date
+                p.exit_price = value
+                p.realized_pnl = p.qty * (value - p.entry_price)
+
+            if abs(combined_exposure) < _HEDGE_FLAT_EPS:
+                continue
+
+            new_qty = 1.0 if combined_exposure > 0 else -1.0
+            new_instrument = FxSpot(pair=pair, notional=abs(combined_exposure))
+            fair_value = self.instrument_value(new_instrument, snapshot, pricer)
+            self.positions.append(Position(
+                instrument=new_instrument, qty=new_qty,
+                clip_id=f"hedge_consolidated_{pair}_{snapshot.date:%Y%m%d}",
+                strategy_id=strategy_id, entry_date=snapshot.date,
+                entry_price=fair_value, cost_paid=0.0,
+            ))
 
     def net_delta(self, snapshot: "MarketSnapshot", pricer: "Pricer") -> float:
         return sum(
-            pos.qty * self._instrument_greeks(pos.instrument, snapshot, pricer).delta
+            pos.qty * self.instrument_greeks(pos.instrument, snapshot, pricer).delta
             for pos in self.positions if pos.is_open
         )
 
@@ -81,7 +130,7 @@ class Portfolio:
 
         for order in orders:
             signed_qty = order.signed_qty
-            fair_price = self._instrument_value(order.instrument, snapshot, pricer)
+            fair_price = self.instrument_value(order.instrument, snapshot, pricer)
             pair = order.instrument.pair
 
             if isinstance(order.instrument, FxVanillaOption):
@@ -91,6 +140,7 @@ class Portfolio:
                 adjustment = cost_model.spot_cost(pair, order.side, order.instrument.notional)
 
             entry_price = fair_price + adjustment
+            cost_paid = abs(adjustment)
             entry_vol = None
             if isinstance(order.instrument, FxVanillaOption):
                 T = order.instrument.time_to_expiry(snapshot.date)
@@ -100,6 +150,6 @@ class Portfolio:
             position = Position(
                 instrument=order.instrument, qty=signed_qty, clip_id=order.clip_id,
                 strategy_id=order.strategy_id, entry_date=snapshot.date,
-                entry_price=entry_price, entry_vol=entry_vol,
+                entry_price=entry_price, entry_vol=entry_vol, cost_paid=cost_paid,
             )
             self.positions.append(position)
