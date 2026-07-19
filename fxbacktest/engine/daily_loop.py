@@ -42,7 +42,8 @@ class BacktestResult(NamedTuple):
 
 def run_backtest(quotes_df: pd.DataFrame, strategies: List[Strategy], hedger: DailyDeltaHedger,
                   pricer: Pricer, assumed_foreign_rate: float = 0.0,
-                  cost_model: Optional[TransactionCostModel] = None) -> BacktestResult:
+                  cost_model: Optional[TransactionCostModel] = None,
+                  vix_df: Optional[pd.DataFrame] = None) -> BacktestResult:
     cost_model = cost_model or TransactionCostModel.zero()
     portfolio = Portfolio()
     dates = pd.DatetimeIndex(sorted(quotes_df["date"].drop_duplicates().tolist()))
@@ -50,11 +51,14 @@ def run_backtest(quotes_df: pd.DataFrame, strategies: List[Strategy], hedger: Da
     traded_pairs = {p for s in strategies for p in s.required_pairs}
     required_pairs = traded_pairs | bridge_pairs_for(traded_pairs)
 
+    vix_series = vix_df.set_index("date")["vix"] if vix_df is not None else None
+
     records = []
     for date in dates:
         snapshots = {pair: build_market_snapshot(date, quotes_df, pair, assumed_foreign_rate)
                     for pair in required_pairs}
-        market = Market(date=date, snapshots=snapshots)
+        vix_today = float(vix_series.loc[date]) if vix_series is not None and date in vix_series.index else None
+        market = Market(date=date, snapshots=snapshots, vix=vix_today)
 
         strategy_orders = [order for strategy in strategies
                            for order in strategy.generate_orders(date, market, portfolio)]

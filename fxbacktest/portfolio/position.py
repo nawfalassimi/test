@@ -23,6 +23,7 @@ class Position:
     exit_date: Optional[pd.Timestamp] = None
     exit_price: Optional[float] = None
     realized_pnl: Optional[float] = None
+    pending_close: bool = False  # set by Portfolio.mark_for_early_close; consumed by mark_to_market
 
     def __post_init__(self) -> None:
         if self.last_mark_price is None:

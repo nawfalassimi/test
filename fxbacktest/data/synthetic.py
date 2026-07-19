@@ -112,3 +112,52 @@ class SyntheticFxDataGenerator:
         df["spot"] = df["date"].map(spot)
         df["pair"] = self.pair
         return df[["pair"] + QUOTE_COLUMNS].sort_values(["date", "tenor"]).reset_index(drop=True)
+
+
+class SyntheticVixGenerator:
+    """Market-wide (NOT per-pair) mean-reverting VIX-like index: ONE series
+    over time, shared across all pairs/strategies. Distinct from the FX OU
+    processes above: those are symmetric-noise-only; this adds occasional
+    one-sided upward jumps (exponential, not normal) that decay back toward
+    baseline over roughly 1/spike_decay business days, producing a genuine
+    fat right tail so >90th-percentile spike events actually occur in test
+    data. Mock data for now — intended to be swapped for a real VIX feed
+    later without changing how strategies/Market consume it."""
+
+    def __init__(
+        self,
+        start: str = "2022-01-01",
+        end: str = "2023-12-29",
+        seed: int = 123,
+        base_level: float = 16.0,
+        floor: float = 9.0,
+        kappa: float = 0.03,
+        sigma: float = 0.35,
+        spike_prob: float = 0.01,
+        spike_scale: float = 10.0,
+        spike_decay: float = 0.15,
+    ):
+        self.dates = pd.bdate_range(start, end)
+        self.seed = seed
+        self.base_level = base_level
+        self.floor = floor
+        self.kappa = kappa
+        self.sigma = sigma
+        self.spike_prob = spike_prob
+        self.spike_scale = spike_scale
+        self.spike_decay = spike_decay
+        self.rng = np.random.default_rng(seed)
+
+    def generate(self) -> pd.DataFrame:
+        n = len(self.dates)
+        base = _ou_process(self.rng, n, x0=self.base_level, mean=self.base_level,
+                            kappa=self.kappa, sigma=self.sigma, floor=self.floor)
+
+        jump_hits = self.rng.random(n) < self.spike_prob
+        jump_sizes = np.where(jump_hits, self.rng.exponential(self.spike_scale, size=n), 0.0)
+        decayed = np.zeros(n)
+        for i in range(1, n):
+            decayed[i] = decayed[i - 1] * (1 - self.spike_decay) + jump_sizes[i]
+
+        vix = np.maximum(base + decayed, self.floor)
+        return pd.DataFrame({"date": self.dates, "vix": vix})

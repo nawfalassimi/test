@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Dict, Set
+from typing import Dict, Optional, Set
 
 import pandas as pd
 
@@ -33,6 +33,7 @@ class Market:
 
     date: pd.Timestamp
     snapshots: Dict[str, MarketSnapshot]
+    vix: Optional[float] = None
 
     def snapshot(self, pair: str) -> MarketSnapshot:
         return self.snapshots[pair]
